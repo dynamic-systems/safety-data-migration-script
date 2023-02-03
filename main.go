@@ -9,106 +9,119 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-// SafetyEmployee defines the data values that will be sent to Azure Blob Storage
-type SafetyEmployee struct {
-        id                                                                                                int
-        name, dept, branch, awardTrack, nextAward, lastAward, employeeType, lastJobWorkedName, occupation string
-        nextAwardDate, lastAwardDate, hireDate, termDate, reHireDate, lastAccidentDate, prEndDate         time.Time
-        activeYN                                                                                          bool
+// ExcelEmployee types the data extracted from data.xlsx
+type ExcelEmployee struct {
+        id                                                              int
+        activeYN                                                        bool
+        name, nextAward, lastAward                                      string
+        lastAwardDate, hireDate, termDate, reHireDate, lastAccidentDate time.Time
 }
 
 func main() {
         f, err := excelize.OpenFile("data.xlsx")
-        if err != nil {
-                panic(err)
-        }
+        check(err)
         defer func() {
                 if err := f.Close(); err != nil {
                         panic(err)
                 }
         }()
         cols, err := f.Cols("DataSheet")
+        check(err)
+        list, err := create(cols)
         if err != nil {
+                print(list)
                 panic(err)
         }
-		list := create(cols)
-        print(list)
+
 }
 
 // create generates a list of active employees
-func create(cols *excelize.Cols) []SafetyEmployee {
-		list := make([]SafetyEmployee, 1)
+func create(cols *excelize.Cols) ([]ExcelEmployee, error) {
+        var err error
+        list := make([]ExcelEmployee, 1)
         for cols.Next() {
                 col, err := cols.Rows()
-                if len(list) != len(col) {
-                        list = make([]SafetyEmployee, len(col))
-                }
                 if err != nil {
-                        panic(err) 
+                        return list, err
+                }
+                if len(list) != len(col) {
+                        list = make([]ExcelEmployee, len(col))
                 }
                 for i := 1; i < len(col); i++ {
-                        obj := &list[i-1]
+                        val := &list[i-1]
                         if len(col[i]) == 0 || col[i] == "." {
                                 continue
                         }
                         switch colName := strings.Trim(col[0], " "); colName {
                         case "Employee Name":
-                                obj.name = col[i]
-                        case "Employee Location":
-                                obj.dept = col[i]
+                                val.name = col[i]
                         case "Hire Date":
-                                obj.hireDate = std(col[i])
+                                val.hireDate = std(col[i])
                         case "Term Date":
-                                obj.termDate = std(col[i])
+                                val.termDate = std(col[i])
                         case "Re Hire Date":
-                                obj.reHireDate = std(col[i])
+                                val.reHireDate = std(col[i])
                         case "Last Accident":
-                                obj.lastAccidentDate = std(col[i])
+                                val.lastAccidentDate = std(col[i])
                         case "Term Without Date":
-                                obj.activeYN = active(obj.hireDate, obj.termDate, obj.reHireDate, col[i])
+                                val.activeYN = active(val.hireDate, val.termDate, val.reHireDate, col[i])
                         case "Next Award Name":
-                                obj.nextAward = col[i]
-                        case "Next Award Date":
-                                obj.nextAwardDate = std(col[i])
+                                val.nextAward = col[i]
+                        case "Award Received":
+                                val.lastAwardDate = std(strings.TrimSuffix(col[i], "T00:00:00"))
                         case "Employee Number":
-                                obj.id = sti(col[i])
+                                val.id = sti(col[i])
                         }
                 }
         }
-		return filter(list)
+        return filter(list), err
 }
 
-// filter creates a new list and only appends active employees
-func filter(e []SafetyEmployee) []SafetyEmployee {
-        newList := make([]SafetyEmployee, 1)
-        for _, obj := range e {
-                if obj.activeYN {
-                        newList = append(newList, obj)
+// check helps reduce repetitive boilerplate error checks
+// non-boilerplate error checks are written explicitly
+func check(e error) {
+        if e != nil {
+                panic(e)
+        }
+}
+
+// filter creates a new list and only appends terminated employees
+func filter(e []ExcelEmployee) []ExcelEmployee {
+        newList := make([]ExcelEmployee, 1)
+        for _, val := range e {
+                if !val.activeYN {
+                        newList = append(newList, val)
                 }
         }
         return newList
 }
 
 // active determines if an employee is active in our system
-func active(hire time.Time, term time.Time, reHire time.Time, termNoDate string) bool {
+func active(hire, term, reHire time.Time, termNoDate string) bool {
         z := time.Time{}
-        if termNoDate == "TRUE" {
-                return false
-        }
-        if reHire != z {
-                if term.After(reHire) {
-                        return false
+        switch {
+        case termNoDate == "TRUE":
+                return true
+        case reHire != z:
+                {
+                        if term.After(reHire) {
+                                return true
+                        }
                 }
+        case term.After(hire):
+                return true
         }
-        if term.After(hire) {
-                return false
-        }
-        return true
+        return false
 }
 
-// std converts string s to type time.Time
+// std converts string s to to time.Time
+// s will always be a short date format
 func std(s string) time.Time {
-        d, err := time.Parse("2006-01-02", strings.Trim(s, " "))
+        format := "2006-01-02"
+        if len(s) != len(format) {
+                panic(s)
+        }
+        d, err := time.Parse(format, strings.Trim(s, " "))
         if err != nil {
                 panic(err)
         }
@@ -124,17 +137,17 @@ func sti(s string) int {
         return i
 }
 
-// print is a helper function for printing an array of SafetyEmployee structs
-func print(e []SafetyEmployee) {
-        for _, obj := range e {
-                fmt.Println("--------------------------------------")
-                fmt.Printf("ID: %v\n", obj.id)
-                fmt.Printf("Name: %v\n", obj.name)
-                fmt.Printf("Dept: %v\n", obj.dept)
-                fmt.Printf("Hire Date: %v\n", obj.hireDate)
-                fmt.Printf("Term Date: %v\n", obj.termDate)
-                fmt.Printf("ReHire Date: %v\n", obj.reHireDate)
-                fmt.Printf("ActiveYN: %v\n", obj.activeYN)
+// print is a helper function for printing an array of ExcelEmployee structs
+func print(e []ExcelEmployee) {
+        for _, val := range e {
+                fmt.Printf("ID: %v\n", val.id)
+                fmt.Printf("Name: %v\n", val.name)
+                fmt.Printf("ActiveYN: %v\n", val.activeYN)
+                fmt.Printf("Hire Date: %v\n", val.hireDate)
+                fmt.Printf("Term Date: %v\n", val.termDate)
+                fmt.Printf("ReHire Date: %v\n", val.reHireDate)
+                fmt.Printf("Award Received: %v\n", val.lastAwardDate)
+                fmt.Printf("Next Award: %v\n", val.nextAward)
                 fmt.Println("--------------------------------------")
         }
 }

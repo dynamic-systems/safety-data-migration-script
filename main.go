@@ -39,7 +39,7 @@ func main() {
 			if err := db.Close(); err != nil {
 				log.Fatal("Error closing CosmosDB connection")
 			}
-		}
+		}()
 		// open local data.xlsx file
         f, err := excelize.OpenFile("data.xlsx")
         if err != nil {

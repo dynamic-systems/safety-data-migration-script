@@ -23,17 +23,24 @@ type ExcelEmployee struct {
 }
 
 func main() {
+		// load variables from .env
         err := godotenv.Load()
         if err != nil {
                 log.Fatal("Error loading .env file")
         }
+		// create connection to CosmosDB
         driver := "gocosmos"
         dsn := os.Getenv("COSMOS_CONNECTION_STR")
         db, err := sql.Open(driver, dsn)
         if err != nil {
-                log.Fatal("Error creating Cosmos connection")
+                log.Fatal("Error creating CosmosDB connection")
         }
-        defer db.Close()
+        defer func() {
+			if err := db.Close(); err != nil {
+				log.Fatal("Error closing CosmosDB connection")
+			}
+		}
+		// open local data.xlsx file
         f, err := excelize.OpenFile("data.xlsx")
         if err != nil {
                 log.Fatal("Error opening data.xlsx")
@@ -43,6 +50,7 @@ func main() {
                         log.Fatal("Error closing data.xlsx")
                 }
         }()
+		// split sheet by column and send to 'create'
         cols, err := f.Cols("DataSheet")
         if err != nil {
                 log.Fatal(err)
@@ -132,7 +140,8 @@ func std(s string) time.Time {
         format := "2006-01-02"
         // check s to verify that it fits the necessary date format to correctly parse the data
         if len(s) != len(format) {
-                log.Fatal(s, "does not match the parse format")
+                log.Printf("%v does not match the short date format\n", s)
+				return time.Time{}	
         }
         d, err := time.Parse(format, strings.Trim(s, " "))
         if err != nil {

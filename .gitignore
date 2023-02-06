@@ -1,1 +1,4 @@
+# Local excel file that data is being pulled from
 *.xlsx
+# Environment variables
+.env

@@ -3,6 +3,12 @@ module github.com/dynamic-systems/safety-data-migration-script
 go 1.19
 
 require (
+	github.com/btnguyen2k/consu/checksum v0.1.2 // indirect
+	github.com/btnguyen2k/consu/gjrc v0.1.1 // indirect
+	github.com/btnguyen2k/consu/olaf v0.1.3 // indirect
+	github.com/btnguyen2k/consu/reddo v0.1.4 // indirect
+	github.com/btnguyen2k/consu/semita v0.1.4 // indirect
+	github.com/btnguyen2k/gocosmos v0.1.9 // indirect
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 // indirect
 	github.com/richardlehane/mscfb v1.0.4 // indirect
 	github.com/richardlehane/msoleps v1.0.3 // indirect

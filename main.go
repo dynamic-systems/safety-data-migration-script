@@ -1,11 +1,13 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
+	_ "github.com/btnguyen2k/gocosmos"
 	"github.com/xuri/excelize/v2"
 )
 
@@ -17,25 +19,38 @@ type ExcelEmployee struct {
         lastAwardDate, hireDate, termDate, reHireDate, lastAccidentDate time.Time
 }
 
+type CosmosEmployee struct {
+        id int
+		SafetyAwards struct {
+				lastAccident string
+				notes string
+				adminTrack[] string
+		}
+}
+
 func main() {
+  		driver := "gocosmos"
+		dsn := "AccountEndpoint=https://apps-dsi-us.documents.azure.com:443/;AccountKey=oNDukOGD2KcUGc8KTc2YP2OuORtd5w9jbaKeEVVhdon7cQ2xl0e8eUeH4cWP5JR15MUnmZf77NOyJO5kIXb5gg==;"
+		db, err := sql.Open(driver, dsn)
+		check(err)
+		defer db.Close()
         f, err := excelize.OpenFile("data.xlsx")
         check(err)
-        defer func() {
-                if err := f.Close(); err != nil {
-                        panic(err)
-                }
-        }()
-        cols, err := f.Cols("DataSheet")
+		defer func() {
+					if err := f.Close(); err != nil {
+							panic(err)
+					}
+		}()
+		cols, err := f.Cols("DataSheet")
         check(err)
         list, err := create(cols)
         if err != nil {
                 print(list)
                 panic(err)
         }
-
 }
 
-// create generates a list of active employees
+// create generates a list of terminated employees
 func create(cols *excelize.Cols) ([]ExcelEmployee, error) {
         var err error
         list := make([]ExcelEmployee, 1)
@@ -76,6 +91,7 @@ func create(cols *excelize.Cols) ([]ExcelEmployee, error) {
         }
         return filter(list), err
 }
+
 
 // check helps reduce repetitive boilerplate error checks
 // non-boilerplate error checks are written explicitly

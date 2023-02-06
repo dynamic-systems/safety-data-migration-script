@@ -22,44 +22,35 @@ type ExcelEmployee struct {
         lastAwardDate, hireDate, termDate, reHireDate, lastAccidentDate time.Time
 }
 
-type CosmosEmployee struct {
-        id int
-		SafetyAwards struct {
-				lastAccident string
-				notes string
-				adminTrack[] string
-		}
-}
-
 func main() {
-		err := godotenv.Load()
-		if err != nil {
-				log.Fatal("Error loading .env file")
-		}
-  		driver := "gocosmos"
-		dsn := os.Getenv("COSMOS_CONNECTION_STR")
-		db, err := sql.Open(driver, dsn)
-		if err != nil {
-				log.Fatal("Error creating Cosmos connection")
-		}
-		defer db.Close()
+        err := godotenv.Load()
+        if err != nil {
+                log.Fatal("Error loading .env file")
+        }
+        driver := "gocosmos"
+        dsn := os.Getenv("COSMOS_CONNECTION_STR")
+        db, err := sql.Open(driver, dsn)
+        if err != nil {
+                log.Fatal("Error creating Cosmos connection")
+        }
+        defer db.Close()
         f, err := excelize.OpenFile("data.xlsx")
-		if err != nil {
-				log.Fatal("Error opening data.xlsx")
-		}
-		defer func() {
-					if err := f.Close(); err != nil {
-						log.Fatal("Error closing data.xlsx")
-					}
-		}()
-		cols, err := f.Cols("DataSheet")
-		if err != nil {
-				log.Fatal(err)
-		}
+        if err != nil {
+                log.Fatal("Error opening data.xlsx")
+        }
+        defer func() {
+                if err := f.Close(); err != nil {
+                        log.Fatal("Error closing data.xlsx")
+                }
+        }()
+        cols, err := f.Cols("DataSheet")
+        if err != nil {
+                log.Fatal(err)
+        }
         list, err := create(cols)
         if err != nil {
-				print(list)
-				log.Fatalf("\nError creating a list of terminated employees:\t%v", err)
+                print(list)
+                log.Fatalf("\nError creating a list of terminated employees:\t%v", err)
         }
 }
 
@@ -77,7 +68,7 @@ func create(cols *excelize.Cols) ([]ExcelEmployee, error) {
                 }
                 for i := 1; i < len(col); i++ {
                         val := &list[i-1]
-						// some cells are empty or contain a single ".", skip these
+                        // some cells are empty or contain a single ".", skip these
                         if len(col[i]) == 0 || col[i] == "." {
                                 continue
                         }
@@ -139,13 +130,13 @@ func active(hire, term, reHire time.Time, termNoDate string) bool {
 // s will always be a short date format
 func std(s string) time.Time {
         format := "2006-01-02"
-		// check s to verify that it fits the necessary date format to correctly parse the data
+        // check s to verify that it fits the necessary date format to correctly parse the data
         if len(s) != len(format) {
-				log.Fatal(s, "does not match the parse format")
+                log.Fatal(s, "does not match the parse format")
         }
         d, err := time.Parse(format, strings.Trim(s, " "))
         if err != nil {
-				log.Fatal(err)
+                log.Fatal(err)
         }
         return d
 }
@@ -154,7 +145,7 @@ func std(s string) time.Time {
 func sti(s string) int {
         i, err := strconv.Atoi(s)
         if err != nil {
-				log.Fatal(err)
+                log.Fatal(err)
         }
         return i
 }

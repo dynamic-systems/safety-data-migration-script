@@ -3,11 +3,14 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"log"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	_ "github.com/btnguyen2k/gocosmos"
+	"github.com/joho/godotenv"
 	"github.com/xuri/excelize/v2"
 )
 
@@ -29,24 +32,34 @@ type CosmosEmployee struct {
 }
 
 func main() {
+		err := godotenv.Load()
+		if err != nil {
+				log.Fatal("Error loading .env file")
+		}
   		driver := "gocosmos"
-		dsn := "AccountEndpoint=https://apps-dsi-us.documents.azure.com:443/;AccountKey=oNDukOGD2KcUGc8KTc2YP2OuORtd5w9jbaKeEVVhdon7cQ2xl0e8eUeH4cWP5JR15MUnmZf77NOyJO5kIXb5gg==;"
+		dsn := os.Getenv("COSMOS_CONNECTION_STR")
 		db, err := sql.Open(driver, dsn)
-		check(err)
+		if err != nil {
+				log.Fatal("Error creating Cosmos connection")
+		}
 		defer db.Close()
         f, err := excelize.OpenFile("data.xlsx")
-        check(err)
+		if err != nil {
+				log.Fatal("Error opening data.xlsx")
+		}
 		defer func() {
 					if err := f.Close(); err != nil {
-							panic(err)
+						log.Fatal("Error closing data.xlsx")
 					}
 		}()
 		cols, err := f.Cols("DataSheet")
-        check(err)
+		if err != nil {
+				log.Fatal(err)
+		}
         list, err := create(cols)
         if err != nil {
-                print(list)
-                panic(err)
+				print(list)
+				log.Fatalf("\nError creating a list of terminated employees:\t%v", err)
         }
 }
 
@@ -64,6 +77,7 @@ func create(cols *excelize.Cols) ([]ExcelEmployee, error) {
                 }
                 for i := 1; i < len(col); i++ {
                         val := &list[i-1]
+						// some cells are empty or contain a single ".", skip these
                         if len(col[i]) == 0 || col[i] == "." {
                                 continue
                         }
@@ -90,15 +104,6 @@ func create(cols *excelize.Cols) ([]ExcelEmployee, error) {
                 }
         }
         return filter(list), err
-}
-
-
-// check helps reduce repetitive boilerplate error checks
-// non-boilerplate error checks are written explicitly
-func check(e error) {
-        if e != nil {
-                panic(e)
-        }
 }
 
 // filter creates a new list and only appends terminated employees
@@ -134,12 +139,13 @@ func active(hire, term, reHire time.Time, termNoDate string) bool {
 // s will always be a short date format
 func std(s string) time.Time {
         format := "2006-01-02"
+		// check s to verify that it fits the necessary date format to correctly parse the data
         if len(s) != len(format) {
-                panic(s)
+				log.Fatal(s, "does not match the parse format")
         }
         d, err := time.Parse(format, strings.Trim(s, " "))
         if err != nil {
-                panic(err)
+				log.Fatal(err)
         }
         return d
 }
@@ -148,7 +154,7 @@ func std(s string) time.Time {
 func sti(s string) int {
         i, err := strconv.Atoi(s)
         if err != nil {
-                panic(err)
+				log.Fatal(err)
         }
         return i
 }

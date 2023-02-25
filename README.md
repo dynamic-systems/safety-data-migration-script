@@ -6,3 +6,5 @@ This script is intended to be of one time use to migrate ~8k terminated employee
 - read the data and create a list of terminated employees
 - generate JSON data from this list of terminated employees
 - send to CosmosDB.
+
+This data is used within the [https://github.com/dynamic-systems/safety-awards-list]

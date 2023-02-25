@@ -1,18 +1,22 @@
 package main
 
 import (
-	"database/sql"
-	"fmt"
+	"context"
+	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	_ "github.com/btnguyen2k/gocosmos"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/data/azcosmos"
 	"github.com/joho/godotenv"
 	"github.com/xuri/excelize/v2"
 )
+
+var dateErrors = make([]string, 1)
 
 // ExcelEmployee types the data extracted from data.xlsx
 type ExcelEmployee struct {
@@ -22,47 +26,89 @@ type ExcelEmployee struct {
         lastAwardDate, hireDate, termDate, reHireDate, lastAccidentDate time.Time
 }
 
-func main() {
-		// load variables from .env
-        err := godotenv.Load()
-        if err != nil {
-                log.Fatal("Error loading .env file")
-        }
-		// create connection to CosmosDB
-        driver := "gocosmos"
-        dsn := os.Getenv("COSMOS_CONNECTION_STR")
-        db, err := sql.Open(driver, dsn)
-        if err != nil {
-                log.Fatal("Error creating CosmosDB connection")
-        }
-        defer func() {
-			if err := db.Close(); err != nil {
-				log.Fatal("Error closing CosmosDB connection")
-			}
-		}()
-		// open local data.xlsx file
-        f, err := excelize.OpenFile("data.xlsx")
-        if err != nil {
-                log.Fatal("Error opening data.xlsx")
-        }
-        defer func() {
-                if err := f.Close(); err != nil {
-                        log.Fatal("Error closing data.xlsx")
-                }
-        }()
-		// split sheet by column and send to 'create'
-        cols, err := f.Cols("DataSheet")
-        if err != nil {
-                log.Fatal(err)
-        }
-        list, err := create(cols)
-        if err != nil {
-                print(list)
-                log.Fatalf("\nError creating a list of terminated employees:\t%v", err)
-        }
+func handle(err error) {
+		if err != nil {
+				log.Fatal(err.Error())
+		}
 }
 
-// create generates a list of terminated employees
+func main() {
+		// open log file
+		logs, err := os.OpenFile("tmp.log", os.O_APPEND|os.O_RDWR|os.O_CREATE, 0644)
+		handle(err)
+		defer func() {
+				err := logs.Close()
+				handle(err)
+		}()
+		// set log output
+		log.SetOutput(logs)
+		// log date-time, filename, and line #
+		log.SetFlags(log.Lshortfile | log.LstdFlags)
+		// open local data file
+        f, err := excelize.OpenFile("data.xlsx")
+		handle(err)
+        defer func() {
+                err := f.Close()
+				handle(err)
+        }()
+		log.Println("Connection to data.xlsx has been created...")
+        cols, err := f.Cols("DataSheet")
+		handle(err)
+        list, err := create(cols)
+		handle(err)
+		log.Printf("List of %v ExcelEmployee structs has been created...\n", len(list))
+		if len(dateErrors) != 1 {
+				for _, d := range dateErrors {
+						log.Printf("%s\n", d)
+				}
+		}
+		//send()
+}
+
+// 'send' sends the list of employees to the CosmosDB database 'vaporwave' and the container 'employees' to create employee items to be used in the Safety Awards Application (https://github.com/dynamic-systmems/safety-awards-list)
+func send() {
+		// load .env
+		err := godotenv.Load()
+		handle(err)
+
+		// create CosmosDB credentials
+		endpoint := os.Getenv("AZURE_COSMOS_ENDPOINT")
+		key := os.Getenv("AZURE_COSMOS_KEY")
+		cred, err := azcosmos.NewKeyCredential(key)
+		handle(err)
+		log.Println("Azure credentials approved...")
+
+		// create CosmosDB client
+		client, err := azcosmos.NewClientWithKey(endpoint, cred, nil)
+		handle(err)
+		log.Println("CosmosDB client has been created...")
+
+		// create Container instance to perform read-write operations
+		container, err := client.NewContainer("vaporwave", "employees")
+		handle(err)
+		log.Println("Container has been created...")
+
+		// generate a PartitionKey and example item
+		pk := azcosmos.NewPartitionKeyString("")
+		item := map[string]string{
+				"id":	"1",
+				"value": "2",
+				"_partitionKey": "",
+		}
+		marshalled, err := json.Marshal(item)
+		handle(err)
+
+		// create container item
+		itemResponse, err := container.CreateItem(context.Background(), pk, marshalled, nil)
+		if err != nil {
+				var responseErr *azcore.ResponseError
+				errors.As(err, &responseErr)
+				log.Fatal(responseErr)
+		}
+		log.Printf("Item created. ActivityId %s consuming %v RU...\n", itemResponse.ActivityID, itemResponse.RequestCharge)
+}
+
+// 'create' generates a list of terminated employees
 func create(cols *excelize.Cols) ([]ExcelEmployee, error) {
         var err error
         list := make([]ExcelEmployee, 1)
@@ -76,8 +122,8 @@ func create(cols *excelize.Cols) ([]ExcelEmployee, error) {
                 }
                 for i := 1; i < len(col); i++ {
                         val := &list[i-1]
-                        // some cells are empty or contain a single ".", skip these
-                        if len(col[i]) == 0 || col[i] == "." {
+                        // some cells are empty or contain a single "." or " ", skip these
+                        if len(col[i]) == 0 || len(col[i]) == 1 {
                                 continue
                         }
                         switch colName := strings.Trim(col[0], " "); colName {
@@ -96,7 +142,10 @@ func create(cols *excelize.Cols) ([]ExcelEmployee, error) {
                         case "Next Award Name":
                                 val.nextAward = col[i]
                         case "Award Received":
-                                val.lastAwardDate = std(strings.TrimSuffix(col[i], "T00:00:00"))
+								{
+										date := strings.TrimSuffix(col[i], "T00:00:00")
+                                		val.lastAwardDate = std(date)
+								}
                         case "Employee Number":
                                 val.id = sti(col[i])
                         }
@@ -105,7 +154,7 @@ func create(cols *excelize.Cols) ([]ExcelEmployee, error) {
         return filter(list), err
 }
 
-// filter creates a new list and only appends terminated employees
+// 'filter' creates a new list and only appends terminated employees
 func filter(e []ExcelEmployee) []ExcelEmployee {
         newList := make([]ExcelEmployee, 1)
         for _, val := range e {
@@ -116,7 +165,7 @@ func filter(e []ExcelEmployee) []ExcelEmployee {
         return newList
 }
 
-// active determines if an employee is active in our system
+// 'active' determines if an employee is active in our system
 func active(hire, term, reHire time.Time, termNoDate string) bool {
         z := time.Time{}
         switch {
@@ -134,42 +183,28 @@ func active(hire, term, reHire time.Time, termNoDate string) bool {
         return false
 }
 
-// std converts string s to to time.Time
-// s will always be a short date format
+// 'std' converts string 's' to to time.Time
+// 's' will always be a short date format
 func std(s string) time.Time {
         format := "2006-01-02"
-        // check s to verify that it fits the necessary date format to correctly parse the data
         if len(s) != len(format) {
-                log.Printf("%v does not match the short date format\n", s)
-				return time.Time{}	
+				dateErrors = append(dateErrors, s)
+				return time.Time{}
         }
         d, err := time.Parse(format, strings.Trim(s, " "))
-        if err != nil {
-                log.Fatal(err)
-        }
+		if err != nil {
+				dateErrors = append(dateErrors, s)
+				return time.Time{}
+		}
         return d
 }
 
-// sti converts string s to type int
+// 'sti' converts string 's' to type int
 func sti(s string) int {
         i, err := strconv.Atoi(s)
-        if err != nil {
-                log.Fatal(err)
-        }
+		if err != nil {
+				dateErrors = append(dateErrors, s)
+				return 0
+		}
         return i
-}
-
-// print is a helper function for printing an array of ExcelEmployee structs
-func print(e []ExcelEmployee) {
-        for _, val := range e {
-                fmt.Printf("ID: %v\n", val.id)
-                fmt.Printf("Name: %v\n", val.name)
-                fmt.Printf("ActiveYN: %v\n", val.activeYN)
-                fmt.Printf("Hire Date: %v\n", val.hireDate)
-                fmt.Printf("Term Date: %v\n", val.termDate)
-                fmt.Printf("ReHire Date: %v\n", val.reHireDate)
-                fmt.Printf("Award Received: %v\n", val.lastAwardDate)
-                fmt.Printf("Next Award: %v\n", val.nextAward)
-                fmt.Println("--------------------------------------")
-        }
 }

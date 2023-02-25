@@ -33,18 +33,14 @@ func handle(err error) {
 }
 
 func main() {
-	// open log file
 	logs, err := os.OpenFile("tmp.log", os.O_APPEND|os.O_RDWR|os.O_CREATE, 0644)
 	handle(err)
 	defer func() {
 		err := logs.Close()
 		handle(err)
 	}()
-	// set log output
 	log.SetOutput(logs)
-	// log date-time, filename, and line #
 	log.SetFlags(log.Lshortfile | log.LstdFlags)
-	// open local data file
 	f, err := excelize.OpenFile("data.xlsx")
 	handle(err)
 	defer func() {
@@ -54,18 +50,19 @@ func main() {
 	log.Println("Connection to data.xlsx has been created...")
 	cols, err := f.Cols("DataSheet")
 	handle(err)
-	list, err := create(cols)
+	list := create(cols)
 	handle(err)
 	log.Printf("List of %v ExcelEmployee structs has been created...\n", len(list))
 	if len(dateErrors) != 1 {
 		for _, d := range dateErrors {
 			log.Printf("%s\n", d)
 		}
+		log.Fatal("Migration failed. Poor data formatting.")
 	}
-	//send()
+	send()
 }
 
-// 'send' sends the list of employees to the CosmosDB database 'vaporwave' and the container 'employees' to create employee items to be used in the Safety Awards Application (https://github.com/dynamic-systmems/safety-awards-list)
+// 'send' iterates through the list of employees and generates items to be sent to a CosmosDB container. The data is to be used in the Safety Awards Application (https://github.com/dynamic-systmems/safety-awards-list)
 func send() {
 	// load .env
 	err := godotenv.Load()
@@ -109,14 +106,11 @@ func send() {
 }
 
 // 'create' generates a list of terminated employees
-func create(cols *excelize.Cols) ([]ExcelEmployee, error) {
-	var err error
+func create(cols *excelize.Cols) ([]ExcelEmployee) {
 	list := make([]ExcelEmployee, 1)
 	for cols.Next() {
 		col, err := cols.Rows()
-		if err != nil {
-			return list, err
-		}
+		handle(err)
 		if len(list) != len(col) {
 			list = make([]ExcelEmployee, len(col))
 		}
@@ -151,7 +145,7 @@ func create(cols *excelize.Cols) ([]ExcelEmployee, error) {
 			}
 		}
 	}
-	return filter(list), err
+	return filter(list)
 }
 
 // 'filter' creates a new list and only appends terminated employees

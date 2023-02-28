@@ -6,7 +6,7 @@ import (
 	"errors"
 	"log"
 	"os"
-	"strconv"
+	"regexp"
 	"strings"
 	"time"
 
@@ -16,101 +16,178 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-var dateErrors = make([]string, 1)
-
-// ExcelEmployee types the data extracted from data.xlsx
 type ExcelEmployee struct {
-	id                                                              int
 	activeYN                                                        bool
-	name, nextAward, lastAward                                      string
+	id, name, lastAward, nextAward, track							string
 	lastAwardDate, hireDate, termDate, reHireDate, lastAccidentDate time.Time
 }
 
-func handle(err error) {
+type Award struct {
+	Step int `json:"step"`
+	ReceiptId *string `json:"receiptId"`
+	ReceivedDate *string `json:"receivedDate"`
+}
+
+type AdminTrack struct {
+	Zero Award `json:"0"`
+	One Award `json:"1"`
+}
+type FieldTrack struct {
+	Zero Award `json:"0"`
+	One Award `json:"1"`
+	Two Award `json:"2"`
+	Three Award `json:"3"`
+	Four Award `json:"4"`
+	Five Award `json:"5"`
+	Six Award `json:"6"`
+}
+
+type SafetyAwards struct {
+	LastAccident *string `json:"lastAccident"`
+	Notes string `json:"notes"`
+	Admin AdminTrack `json:"adminTrack"`
+	Field FieldTrack `json:"fieldTrack"`
+}
+
+type CosmosEmployee struct {
+	Id string `json:"id"`
+	Safety SafetyAwards `json:"safetyAwards"`
+	Key string `json:"_partitionKey"`
+}
+
+var dateErrors = make([]string, 1)
+
+func handle(err error, message string) {
 	if err != nil {
-		log.Fatal(err.Error())
+		log.Fatalf("%s\n%v", message, err.Error())
 	}
 }
 
 func main() {
-	logs, err := os.OpenFile("tmp.log", os.O_APPEND|os.O_RDWR|os.O_CREATE, 0644)
-	handle(err)
+	logs, err := os.OpenFile("out.log", os.O_APPEND|os.O_RDWR|os.O_CREATE, 0644)
+	handle(err, "Failed to open out.log")
 	defer func() {
 		err := logs.Close()
-		handle(err)
+		handle(err, "Failed to close out.log")
 	}()
 	log.SetOutput(logs)
 	log.SetFlags(log.Lshortfile | log.LstdFlags)
 	f, err := excelize.OpenFile("data.xlsx")
-	handle(err)
+	handle(err, "Failed to open data.xlsx")
 	defer func() {
 		err := f.Close()
-		handle(err)
+		handle(err, "Failed to close data.xlsx")
 	}()
-	log.Println("Connection to data.xlsx has been created...")
+	log.Println("Connection to data.xlsx has been created")
 	cols, err := f.Cols("DataSheet")
-	handle(err)
-	list := create(cols)
-	handle(err)
-	log.Printf("List of %v ExcelEmployee structs has been created...\n", len(list))
+	handle(err, "Failed to extract columns from DataSheet")
+	list := createEmployeeList(cols)
+	log.Printf("List of %v ExcelEmployee structs has been created\n", len(list))
 	if len(dateErrors) != 1 {
 		for _, d := range dateErrors {
 			log.Printf("%s\n", d)
 		}
-		log.Fatal("Migration failed. Poor data formatting.")
+		log.Fatal("Migration failed. Poor data formatting")
 	}
-	send()
+	sendToCosmos(list)
 }
 
-// 'send' iterates through the list of employees and generates items to be sent to a CosmosDB container. The data is to be used in the Safety Awards Application (https://github.com/dynamic-systmems/safety-awards-list)
-func send() {
+// 'sendToCosmos' iterates through the list of employees and generates items to be sent to a CosmosDB container. The data is to be used in the Safety Awards Application (https://github.com/dynamic-systmems/safety-awards-list)
+func sendToCosmos(list []ExcelEmployee) {
 	// load .env
 	err := godotenv.Load()
-	handle(err)
+	handle(err, "Failed to load .env")
 
 	// create CosmosDB credentials
 	endpoint := os.Getenv("AZURE_COSMOS_ENDPOINT")
 	key := os.Getenv("AZURE_COSMOS_KEY")
 	cred, err := azcosmos.NewKeyCredential(key)
-	handle(err)
-	log.Println("Azure credentials approved...")
+	handle(err, "Failed to generate Azure credentials")
+	log.Println("Azure credentials approved")
 
 	// create CosmosDB client
 	client, err := azcosmos.NewClientWithKey(endpoint, cred, nil)
-	handle(err)
-	log.Println("CosmosDB client has been created...")
+	handle(err, "Failed to create CosmosDB client")
+	log.Println("CosmosDB client has been created")
 
 	// create Container instance to perform read-write operations
 	container, err := client.NewContainer("vaporwave", "employees")
-	handle(err)
-	log.Println("Container has been created...")
+	handle(err, "Failed to create container")
+	log.Println("Container has been created")
 
-	// generate a PartitionKey and example item
+	// generate a PartitionKey
 	pk := azcosmos.NewPartitionKeyString("")
-	item := map[string]string{
-		"id":            "1",
-		"value":         "2",
-		"_partitionKey": "",
+	
+	// create items and send to the container
+	for _, emp := range list {
+		item := buildJson(emp)
+		marshalled, err := json.Marshal(item)
+		handle(err, "Failed to encode item into JSON")
+		// create container item
+		itemResponse, err := container.CreateItem(context.Background(), pk, marshalled, nil)
+		if err != nil {
+			var responseErr *azcore.ResponseError
+			errors.As(err, &responseErr)
+			log.Fatal(responseErr)
+		}
+		log.Printf("%+v\n", item)
+		log.Fatalf("Item created. ActivityId %s consuming %v RU...\n", itemResponse.ActivityID, itemResponse.RequestCharge)
 	}
-	marshalled, err := json.Marshal(item)
-	handle(err)
-
-	// create container item
-	itemResponse, err := container.CreateItem(context.Background(), pk, marshalled, nil)
-	if err != nil {
-		var responseErr *azcore.ResponseError
-		errors.As(err, &responseErr)
-		log.Fatal(responseErr)
-	}
-	log.Printf("Item created. ActivityId %s consuming %v RU...\n", itemResponse.ActivityID, itemResponse.RequestCharge)
 }
 
-// 'create' generates a list of terminated employees
-func create(cols *excelize.Cols) ([]ExcelEmployee) {
+// 'buildJson' converts an ExcelEmployee struct into a CosmosEmployee to correctly format each item to be sent to the CosmosDB container
+func buildJson(emp ExcelEmployee) CosmosEmployee {
+	var lastAccident *string
+	zeroDate := time.Time{}
+	if emp.lastAccidentDate != zeroDate {
+		lastAccident = formatDate(emp.lastAccidentDate)
+	}
+	var admin AdminTrack
+	admin.Zero.Step = 1
+	admin.One.Step = 2
+	var field FieldTrack
+	field.Zero.Step = 1
+	field.One.Step = 2
+	field.Two.Step = 3
+	field.Three.Step = 4
+	field.Four.Step = 5
+	field.Five.Step = 6
+	field.Six.Step = 7
+	if emp.track == "admin" {
+		switch strings.ToLower(emp.lastAward) {
+		case "lunchbox": admin.Zero.ReceivedDate = formatDate(emp.lastAwardDate)
+		case "set": admin.One.ReceivedDate = formatDate(emp.lastAwardDate)
+		}
+	} else {
+		switch strings.ToLower(emp.lastAward) {
+		case "cap": field.Zero.ReceivedDate = formatDate(emp.lastAwardDate)
+		case "lunchbox": field.One.ReceivedDate = formatDate(emp.lastAwardDate)
+		case "backpack": field.Two.ReceivedDate = formatDate(emp.lastAwardDate)
+		case "multitool": field.Three.ReceivedDate = formatDate(emp.lastAwardDate)
+		case "knife": field.Four.ReceivedDate = formatDate(emp.lastAwardDate)
+		case "set": field.Five.ReceivedDate = formatDate(emp.lastAwardDate)
+		case "$750": field.Six.ReceivedDate = formatDate(emp.lastAwardDate)
+		}
+	}
+	cosmos := CosmosEmployee{
+		Id: emp.id,
+		Safety: SafetyAwards{
+			LastAccident: lastAccident,
+			Notes: "",
+			Admin: admin,
+			Field: field,
+		},
+		Key: "",
+	}	
+	return cosmos
+}
+
+// 'create' generates a list of terminated ExcelEmployee structs
+func createEmployeeList(cols *excelize.Cols) ([]ExcelEmployee) {
 	list := make([]ExcelEmployee, 1)
 	for cols.Next() {
 		col, err := cols.Rows()
-		handle(err)
+		handle(err, "Failed to extract rows from the cols instance")
 		if len(list) != len(col) {
 			list = make([]ExcelEmployee, len(col))
 		}
@@ -122,45 +199,77 @@ func create(cols *excelize.Cols) ([]ExcelEmployee) {
 			}
 			switch colName := strings.Trim(col[0], " "); colName {
 			case "Employee Name":
-				val.name = col[i]
+				{
+					name := col[i]
+					if strings.Contains(col[i], "(") {
+						val.track = "admin"
+						re := regexp.MustCompile(`\(\w+\)`)
+						name = re.ReplaceAllString(name, "")
+					} else {
+						val.track = "field"
+					}
+					val.name = name
+				}
 			case "Hire Date":
-				val.hireDate = std(col[i])
+				val.hireDate = formatStr(col[i])
 			case "Term Date":
-				val.termDate = std(col[i])
+				val.termDate = formatStr(col[i])
 			case "Re Hire Date":
-				val.reHireDate = std(col[i])
+				val.reHireDate = formatStr(col[i])
 			case "Last Accident":
-				val.lastAccidentDate = std(col[i])
+				val.lastAccidentDate = formatStr(col[i])
 			case "Term Without Date":
-				val.activeYN = active(val.hireDate, val.termDate, val.reHireDate, col[i])
-			case "Next Award Name":
-				val.nextAward = col[i]
+				val.activeYN = isActive(val.hireDate, val.termDate, val.reHireDate, col[i])
+			case "Next Award Name": 
+				{
+					lastAward := ""
+					if val.track == "admin" {
+						switch strings.ToLower(col[i]) {
+						case "lunchbox": lastAward = "none"
+						case "set": lastAward = "lunchbox"
+						case "done": lastAward = "set"
+						}
+					} else {
+						switch strings.ToLower(col[i]) {
+						case "cap": lastAward = "none"
+						case "lunchbox": lastAward = "cap"
+						case "backpack": lastAward = "lunchbox"
+						case "multitool": lastAward = "backpack"
+						case "knife": lastAward = "multitool"
+						case "set": lastAward = "knife"
+						case "$750": lastAward = "set"
+						case "done": lastAward = "$750"
+						}
+					}
+					val.lastAward = lastAward
+					val.nextAward = col[i]
+				}
 			case "Award Received":
 				{
 					date := strings.TrimSuffix(col[i], "T00:00:00")
-					val.lastAwardDate = std(date)
+					val.lastAwardDate = formatStr(date)
 				}
 			case "Employee Number":
-				val.id = sti(col[i])
+				val.id = col[i]
 			}
 		}
 	}
-	return filter(list)
+	return filterActiveEmployees(list)
 }
 
-// 'filter' creates a new list and only appends terminated employees
-func filter(e []ExcelEmployee) []ExcelEmployee {
+// 'filterActiveEmployees' creates a new list and only appends terminated employees
+func filterActiveEmployees(e []ExcelEmployee) []ExcelEmployee {
 	newList := make([]ExcelEmployee, 1)
 	for _, val := range e {
 		if !val.activeYN {
 			newList = append(newList, val)
 		}
 	}
-	return newList
+	return newList[1:]
 }
 
-// 'active' determines if an employee is active in our system
-func active(hire, term, reHire time.Time, termNoDate string) bool {
+// 'isActive' determines if an employee is active in our system
+func isActive(hire, term, reHire time.Time, termNoDate string) bool {
 	z := time.Time{}
 	switch {
 	case termNoDate == "TRUE":
@@ -177,9 +286,16 @@ func active(hire, term, reHire time.Time, termNoDate string) bool {
 	return false
 }
 
-// 'std' converts string 's' to to time.Time
+// 'formatDate' returns the date 'd' as a string in a MM-DD-YYYY format
+func formatDate(d time.Time) *string {
+	s := d.Format("01-02-2006")
+	s = strings.ReplaceAll(s, "-", "/")
+	return &s
+}
+
+// 'formatStr' returns string 's' as time.Time
 // 's' will always be a short date format
-func std(s string) time.Time {
+func formatStr(s string) time.Time {
 	format := "2006-01-02"
 	if len(s) != len(format) {
 		dateErrors = append(dateErrors, s)
@@ -191,14 +307,4 @@ func std(s string) time.Time {
 		return time.Time{}
 	}
 	return d
-}
-
-// 'sti' converts string 's' to type int
-func sti(s string) int {
-	i, err := strconv.Atoi(s)
-	if err != nil {
-		dateErrors = append(dateErrors, s)
-		return 0
-	}
-	return i
 }

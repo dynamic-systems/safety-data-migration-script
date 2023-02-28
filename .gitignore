@@ -3,4 +3,4 @@
 # Environment variables
 .env
 # Log files
-tmp.log
+out.log

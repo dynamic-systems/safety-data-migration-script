@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
@@ -18,7 +17,7 @@ import (
 
 type ExcelEmployee struct {
 	activeYN                                                        bool
-	id, name, lastAward, nextAward, track                           string
+	id, lastAward, nextAward, track                           		string
 	lastAwardDate, hireDate, termDate, reHireDate, lastAccidentDate time.Time
 }
 
@@ -32,6 +31,7 @@ type AdminTrack struct {
 	Zero Award `json:"0"`
 	One  Award `json:"1"`
 }
+
 type FieldTrack struct {
 	Zero  Award `json:"0"`
 	One   Award `json:"1"`
@@ -82,7 +82,11 @@ func main() {
 	cols, err := f.Cols("DataSheet")
 	handle(err, "Failed to extract columns from DataSheet")
 	list := createEmployeeList(cols)
+	for _, emp := range list {
+		log.Println("ID: ", emp.id)
+	}
 	log.Printf("List of %v ExcelEmployee structs has been created\n", len(list))
+	print(list)
 	if len(dateErrors) != 1 {
 		for _, d := range dateErrors {
 			log.Printf("%s\n", d)
@@ -90,49 +94,75 @@ func main() {
 		log.Fatal("Migration failed. Poor data formatting")
 	}
 	sendToCosmos(list)
+	log.Println("Migration Complete.")
 }
 
 // 'sendToCosmos' iterates through the list of employees and generates items to be sent to a CosmosDB container. The data is to be used in the Safety Awards Application (https://github.com/dynamic-systmems/safety-awards-list)
 func sendToCosmos(list []ExcelEmployee) {
-	// load .env
 	err := godotenv.Load()
 	handle(err, "Failed to load .env")
 
-	// create CosmosDB credentials
 	endpoint := os.Getenv("AZURE_COSMOS_ENDPOINT")
 	key := os.Getenv("AZURE_COSMOS_KEY")
 	cred, err := azcosmos.NewKeyCredential(key)
 	handle(err, "Failed to generate Azure credentials")
 	log.Println("Azure credentials approved")
 
-	// create CosmosDB client
 	client, err := azcosmos.NewClientWithKey(endpoint, cred, nil)
 	handle(err, "Failed to create CosmosDB client")
 	log.Println("CosmosDB client has been created")
 
-	// create Container instance to perform read-write operations
-	container, err := client.NewContainer("vaporwave", "employees")
+	databaseName := os.Getenv("AZURE_COSMOS_DATABASE")
+	containerName := os.Getenv("AZURE_COSMOS_CONTAINER")
+	container, err := client.NewContainer(databaseName, containerName) 
 	handle(err, "Failed to create container")
 	log.Println("Container has been created")
 
-	// generate a PartitionKey
-	pk := azcosmos.NewPartitionKeyString("")
 
-	// create items and send to the container
 	for _, emp := range list {
+		if emp.id != "26596" {
+			continue
+		}
+		pk := azcosmos.NewPartitionKeyString("")
+		if isInContainer(emp.id, container, pk) {
+			log.Printf("Employee %s is already in the CosmosDB container", emp.id)
+			continue
+		}
 		item := buildJson(emp)
 		marshalled, err := json.Marshal(item)
 		handle(err, "Failed to encode item into JSON")
-		// create container item
 		itemResponse, err := container.CreateItem(context.Background(), pk, marshalled, nil)
 		if err != nil {
 			var responseErr *azcore.ResponseError
 			errors.As(err, &responseErr)
 			log.Fatal(responseErr)
 		}
-		log.Printf("%+v\n", item)
-		log.Fatalf("Item created. ActivityId %s consuming %v RU...\n", itemResponse.ActivityID, itemResponse.RequestCharge)
+		log.Printf("Item created. ActivityId %s consuming %v RU...\nEmployee ID: %s\n", itemResponse.ActivityID, itemResponse.RequestCharge, emp.id)
 	}
+}
+
+// 'isInContainer' checks for a duplicate employee record before a new one is created.
+// Note: This exists because some employees may not necessarily be terminated even though the data says so.
+func isInContainer(id string, container *azcosmos.ContainerClient, pk azcosmos.PartitionKey) bool {
+	opt := &azcosmos.QueryOptions{
+		QueryParameters: []azcosmos.QueryParameter{
+			{Name: "@id", Value: id},
+		},
+	}
+	queryPager := container.NewQueryItemsPager("select * from c where c.id = @id", pk, opt)
+	if queryPager.More() {
+		queryResponse, err := queryPager.NextPage(context.Background())
+		if err != nil {
+			var responseErr *azcore.ResponseError
+			errors.As(err, &responseErr)
+			log.Fatal(responseErr)
+		}
+		log.Println(queryResponse.Items)
+		if len(queryResponse.Items) == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // 'buildJson' converts an ExcelEmployee struct into a CosmosEmployee to correctly format each item to be sent to the CosmosDB container
@@ -191,33 +221,44 @@ func buildJson(emp ExcelEmployee) CosmosEmployee {
 	return cosmos
 }
 
-// 'create' generates a list of terminated ExcelEmployee structs
+// 'checkForNecessaryColumn' checks to see if the column name is one of the necessary columns we must iterate through
+func checkForNecessaryColumn(n string) bool {
+	colNames := [9]string{"Employee Name", "Hire Date", "Term Date", "Re Hire Date", "Last Accident", "Term Without Date", "Next Award Name", "Award Received", "Employee Number"}
+	for _, v := range colNames {
+		if n == v {
+			return true
+		}
+	}
+	return false
+}
+
+// 'createEmployeeList' generates a list of terminated ExcelEmployee structs
 func createEmployeeList(cols *excelize.Cols) []ExcelEmployee {
-	list := make([]ExcelEmployee, 1)
+	var list []ExcelEmployee
 	for cols.Next() {
 		col, err := cols.Rows()
 		handle(err, "Failed to extract rows from the cols instance")
 		if len(list) != len(col) {
 			list = make([]ExcelEmployee, len(col))
 		}
+		// we want to skip unnecessary columns we don't need data from
+		if !checkForNecessaryColumn(col[0]) {
+			continue
+		}
 		for i := 1; i < len(col); i++ {
 			val := &list[i-1]
 			// some cells are empty or contain a single "." or " ", skip these
-			if len(col[i]) == 0 || len(col[i]) == 1 {
+			if len(col[i]) <= 1 {
 				continue
 			}
 			switch colName := strings.Trim(col[0], " "); colName {
 			case "Employee Name":
 				{
-					name := col[i]
 					if strings.Contains(col[i], "(") {
 						val.track = "admin"
-						re := regexp.MustCompile(`\(\w+\)`)
-						name = re.ReplaceAllString(name, "")
 					} else {
 						val.track = "field"
 					}
-					val.name = name
 				}
 			case "Hire Date":
 				val.hireDate = formatStr(col[i])
@@ -228,35 +269,41 @@ func createEmployeeList(cols *excelize.Cols) []ExcelEmployee {
 			case "Last Accident":
 				val.lastAccidentDate = formatStr(col[i])
 			case "Term Without Date":
-				val.activeYN = isActive(val.hireDate, val.termDate, val.reHireDate, col[i])
+				{
+					if col[i] == "TRUE" {
+						val.activeYN = false
+					} else {
+						val.activeYN = val.hireDate.After(val.termDate) || val.reHireDate.After(val.termDate)
+					}
+				}
 			case "Next Award Name":
 				{
 					lastAward := ""
 					if val.track == "admin" {
 						switch strings.ToLower(col[i]) {
 						case "lunchbox":
-							lastAward = "none"
+							lastAward = "None"
 						case "set":
-							lastAward = "lunchbox"
+							lastAward = "Lunchbox"
 						case "done":
-							lastAward = "set"
+							lastAward = "Set"
 						}
 					} else {
 						switch strings.ToLower(col[i]) {
 						case "cap":
-							lastAward = "none"
+							lastAward = "None"
 						case "lunchbox":
-							lastAward = "cap"
+							lastAward = "Cap"
 						case "backpack":
-							lastAward = "lunchbox"
+							lastAward = "Lunchbox"
 						case "multitool":
-							lastAward = "backpack"
+							lastAward = "Backpack"
 						case "knife":
-							lastAward = "multitool"
+							lastAward = "Multitool"
 						case "set":
-							lastAward = "knife"
+							lastAward = "Knife"
 						case "$750":
-							lastAward = "set"
+							lastAward = "Set"
 						case "done":
 							lastAward = "$750"
 						}
@@ -285,25 +332,7 @@ func filterActiveEmployees(e []ExcelEmployee) []ExcelEmployee {
 			newList = append(newList, val)
 		}
 	}
-	return newList[1:]
-}
-
-// 'isActive' determines if an employee is active in our system
-func isActive(hire, term, reHire time.Time, termNoDate string) bool {
-	z := time.Time{}
-	switch {
-	case termNoDate == "TRUE":
-		return true
-	case reHire != z:
-		{
-			if term.After(reHire) {
-				return true
-			}
-		}
-	case term.After(hire):
-		return true
-	}
-	return false
+	return newList[1:len(newList)-1]
 }
 
 // 'formatDate' returns the date 'd' as a string in a MM-DD-YYYY format
@@ -327,4 +356,18 @@ func formatStr(s string) time.Time {
 		return time.Time{}
 	}
 	return d
+}
+
+// print is a helper function for printing an array of ExcelEmployee structs
+func print(e []ExcelEmployee) {
+        for _, val := range e {
+                log.Printf("ID: %v\n", val.id)
+                log.Printf("ActiveYN: %v\n", val.activeYN)
+                log.Printf("Hire Date: %v\n", val.hireDate)
+                log.Printf("Term Date: %v\n", val.termDate)
+                log.Printf("ReHire Date: %v\n", val.reHireDate)
+                log.Printf("Award Received: %v\n", val.lastAwardDate)
+                log.Printf("Next Award: %v\n", val.nextAward)
+                log.Println("--------------------------------------")
+        }
 }
